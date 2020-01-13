@@ -3,30 +3,42 @@
 #include <thread>
 #include <mutex>
 #include <string>
+#include <unordered_map>
+#include <list>
 #include "common.h"
 
 class client {
+
+struct request {
+    unsigned int size;
+    std::vector<char> data;
+};
+typedef std::list<request> request_queue;
 public:
     client();
     ~client();
     void join_group(const char* unix_socket_path = DEFAULT_SOCKET_PATH);
+    void close_connection();
     char get_id();
     void send_data(void * data,unsigned int size);
     virtual void process_data(void * data,unsigned int size){};
     
 private:
     static void sigioHandler(int sig);
-    void handle_requests(char data[MAX_PACKET_SIZE],unsigned int packet_size);
+    void handle_requests();
 
 private:
     int fd;
     char client_id;
-    std::vector<std::thread> threads;
-    std::mutex read_mtx;
+    bool close_granted;
+    request_queue requests;
+    bool is_thread_active;
+    std::thread execution_thread;
     static client * pInstance;
 };
 
 class server {
+    typedef std::unordered_map<char,int> clientsMap;
  public:
     template < class T=server>
     static T&  instance();
@@ -37,17 +49,6 @@ class server {
     void send_data(char client_id, void * data, unsigned int size);
     virtual void process_data(char client_id, void * data,unsigned int size){};
     
-
- private:
-    class client{
-        public:
-        client():
-            fd(-1),id(-1),isConnected(false)
-        {}
-            int fd;
-            char id;
-            bool isConnected;
-    };
 protected:
     server();
 private:
@@ -57,8 +58,8 @@ private:
     int sfd;
     static server * pInstance;
     std::string socket_path;
-    std::thread server_thread;
-    std::vector<server::client> clients;
+    std::thread execution_thread;
+    clientsMap clients;
 };
 
 

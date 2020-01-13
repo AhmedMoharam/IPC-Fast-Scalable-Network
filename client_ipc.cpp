@@ -13,24 +13,26 @@
 
 client* client::pInstance = nullptr;
 
+static unsigned int count = 0;
+
 client::client()
-        : fd(-1),client_id(-1){
+        : fd(-1),client_id(-1),close_granted(false),is_thread_active(false){
     fd = socket(AF_UNIX,SOCK_STREAM,0);
     if(fd < 0)
         handle_error("SOCKET");    
-    printf("my fd is %d\n",fd);
 
  }
  client::~client(){
+    //wait for execution thread before close
+    if(execution_thread.joinable())
+        execution_thread.join();
+    
     //clean up the socket by reading all data sent from server that is still on the socket so that when
     //closing the socket no rubbish would be sent to server as if we sent a request
     char c;
     while (read(fd,&c,1) != -1 && errno != EWOULDBLOCK);
+
     close(fd);
-    //wait for threads before close
-    for(unsigned int i=0; i < threads.size(); i++)
-        if(threads[i].joinable())
-            threads[i].join();
     pInstance = nullptr;
  }
 void client::join_group(const char* unix_socket_path){
@@ -77,8 +79,12 @@ void client::join_group(const char* unix_socket_path){
     int flags = fcntl(fd, F_GETFL);
     if (fcntl(fd, F_SETFL, flags | O_ASYNC | O_NONBLOCK) == -1)
         handle_error("FCNTL(F_SETFL)");
-    printf("my fd is %d\n",fd);
+
     pInstance = this;
+
+    //send ready signal
+    char c = READY_TO_SERVE;
+    write(fd,&c,sizeof(c));
 }
 void client::send_data(void * data,unsigned int size){
     //write the size of the packet in 4 bytes
@@ -90,30 +96,58 @@ void client::send_data(void * data,unsigned int size){
 char client::get_id(){
     return client_id;
 }
-
-void client::sigioHandler(int sig){
-    char data[MAX_PACKET_SIZE];
-    unsigned int packet_size;
-    int cnt = read(pInstance->fd,&packet_size,4);
-
-    if(cnt == -1 && (errno == EWOULDBLOCK || errno== EAGAIN)){
-        return;
-    }else if(cnt == -1){ //error
-        handle_error("read(packet_size)");
-    }else if(cnt == 0){
-        handle_error("server closed unexpectedly");
-    }else if(cnt == 4){ //normal packet read
-        cnt = read(pInstance->fd,&data,packet_size);
-    }else{
-        handle_error("read(packet_size) unexpected case");
-    }
-    pInstance->threads.push_back(std::thread(&client::handle_requests,pInstance,data,packet_size));
+void client::close_connection(){
+    char c = CLOSE_CONNECTION;
+    send_data(&c,sizeof(c));
+    while(!close_granted);
+    //singletion destructor should be called here
 
 }
 
-void client::handle_requests(char data[MAX_PACKET_SIZE],unsigned int packet_size){
-    printf("handling request of size %d\n",packet_size);
-    process_data(data,packet_size);
-    
+void client::sigioHandler(int sig){
+    printf("sigio\n");
+    count++;
+    request req;
+    int cnt = read(pInstance->fd,&req.size,4);
+
+    if(cnt == -1){ //error
+        handle_error("read(packet_size)");
+    }else if(cnt == 0){
+        printf("io count = %d\n",count);
+        printf("server closed\n");
+        close(pInstance->fd);
+        pInstance->fd = -1;
+        return;
+        //handle_error("server closed unexpectedly");
+    }else if(cnt == 4){ //normal packet read
+        req.data.resize(req.size);
+        cnt = read(pInstance->fd,req.data.data(),req.size);
+    }else{
+        handle_error("read(packet_size) unexpected case");
+    }
+    pInstance->requests.push_back(req);
+    if(!pInstance->is_thread_active){
+        if(pInstance->execution_thread.joinable())
+            pInstance->execution_thread.join();
+        pInstance->execution_thread = std::thread(&client::handle_requests,pInstance);
+    }
+
+}
+
+void client::handle_requests(){
+    is_thread_active = true;
+    while(!requests.empty()){
+        if((requests.front().size == 1) &&( *(requests.front().data.data()) == CLOSE_CONNECTION_GRANTED) ){
+            printf("close granted\n");
+            close_granted = true;
+            requests.pop_front();
+            is_thread_active = false;
+            return; //server should not send requests after close granted
+        }
+        process_data(requests.front().data.data(),requests.front().size);
+        requests.pop_front();
+    }
+    printf("thread ended\n");
+    is_thread_active = false;
 }
 

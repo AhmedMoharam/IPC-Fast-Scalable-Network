@@ -44,9 +44,9 @@ int main(int argc, char * argv[]){
     server_inst.run_on_thread();
      char buffer[] = "Hello World";
     //std::cout << "[CLIENT]" << "sending reuqest: start_addr=" << request.start_addr << " size=" << request.size << std::endl;
-    for(int i=0; i < 3 ; i++){
-        server_inst.send_data('A',buffer, sizeof(buffer));
-        sleep(1);
+    for(int i=0; i < 1000000 ; i++){
+        server_inst.send_data(0,buffer, sizeof(buffer));
+        //sleep(1);
     }
    /* for(int i=0; i < 32 ; i++){
         server_inst.send_data('B',buffer, sizeof(buffer));

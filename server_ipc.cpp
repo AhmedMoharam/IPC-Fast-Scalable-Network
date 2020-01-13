@@ -22,8 +22,6 @@ server::server(){
 
 void server::create_group(const int & num_clients, const char * unix_socket_path ){
     
-    clients.resize(num_clients);
-
     //assign a unique name for your socket
     //bind creates the actual file that we unlink at cleaning up step
     sockaddr_un server_sockaddr;
@@ -48,17 +46,25 @@ void server::create_group(const int & num_clients, const char * unix_socket_path
 
     sockaddr_un client_sockaddr;
     socklen_t client_addr_size = sizeof(sockaddr_un);
-    for(int i =0 ; i < num_clients ; i++){
-        clients[i].fd = accept(sfd,(sockaddr *)&client_sockaddr,&client_addr_size);
-        if(clients[i].fd < 0 )
+    for(char i =0 ; i < num_clients ; i++){
+        //assigning id for each client (id = index) as well socket fd for each
+        clients[i] = accept(sfd,(sockaddr *)&client_sockaddr,&client_addr_size);
+        if(clients[i] < 0 )
             handle_error("ACCEPT");
     }
     //configure each connected device
     for(char i =0 ; i < num_clients ; i++){
         //send unique id for each client
-        clients[i].id = i+ 'A';
-        clients[i].isConnected = true;
-        write(clients[i].fd,(void *)&i,sizeof(i));
+        write(clients[i],(void *)&i,sizeof(i));
+    }
+
+    //wait for clients to get ready
+    for(char i =0 ; i < num_clients ; i++){
+        //receive ready signal
+        char c;
+        read(clients[i],(void *)&c,sizeof(c));
+        if(c != READY_TO_SERVE)
+            handle_error("receive ready signal");
     }
 }
 void server::handle_requests(){
@@ -71,35 +77,40 @@ void server::handle_requests(){
         FD_ZERO(&readfds);
         memset(&data,0,sizeof(data));
         int max_fd = 0;
-        for (unsigned int i = 0; i < clients.size() ; i++){
-            FD_SET(clients[i].fd, &readfds);
-            max_fd = clients[i].fd > max_fd ? clients[i].fd : max_fd ;
+        for (auto client : clients){
+            FD_SET(client.second, &readfds);
+            max_fd = client.second > max_fd ? client.second : max_fd ;
         }
         
         int req_num = select(max_fd + 1, &readfds, NULL, NULL, NULL);
         if(req_num < 0)
             handle_error("SELECT");
        
-        for(unsigned int i = 0; i < clients.size() ; i++){
-            if(FD_ISSET(clients[i].fd, &readfds)){
+        for(auto client : clients){
+            if(FD_ISSET(client.second, &readfds)){
                 unsigned int packet_size;
-                int cnt = read(clients[i].fd,&packet_size,4);
+                int cnt = read(client.second,&packet_size,4);
                 //unsigned int cnt = read(clients[i].fd,&data,sizeof(data));
                 if(cnt == 0){ //client closed connection and sent EOF
-                    clients.erase(clients.begin()+i);
-                    i--;
-                    if(clients.empty())
-                        return;
-                    break;
+                    handle_error("should not be here ever");    
                 }else if(cnt == 4){ // normal packet
-                    cnt = read(clients[i].fd,&data,packet_size);
+                    cnt = read(client.second,&data,packet_size);
                 }else if(cnt == -1){ // error ocurred
                     handle_error("read(packet_size)");
                 }else{ // unexpected case
                     handle_error("read(packet_size) unexpected case");
                 }
-                std::cout << "[SERVER] CLIENT[" << clients[i].id << "] sent request with size=" << cnt << std::endl;
-                process_data(clients[i].id,data,cnt);
+                if( (packet_size == 1) && (*data = CLOSE_CONNECTION)){
+                    //grant close ASAP
+                    char c = CLOSE_CONNECTION_GRANTED;
+                    send_data(client.first,&c,sizeof(c));
+                    clients.erase(client.first);
+                    if(clients.empty())
+                        return;
+                    
+                }else{
+                    process_data(client.first,data,cnt);
+                }
             }
         }
 
@@ -108,29 +119,25 @@ void server::handle_requests(){
 }
 
 void server::run_on_thread(){
-    server_thread = std::thread (&server::handle_requests,this);
+    execution_thread = std::thread (&server::handle_requests,this);
 
 }
 void server::wait_on_thread(){
-    server_thread.join();
+    execution_thread.join();
     delete pInstance;
 }
 
 void server::send_data(char client_id, void * data, unsigned int size){
-    //clients vector are oredered so we can use binary search
-    std::vector<server::client>::iterator it = std::lower_bound(clients.begin(),clients.end(),client_id, 
-    [](server::client lhs, char rhs) { return lhs.id < rhs; } );
-    if(it->id == client_id){
-       int cnt = write(it->fd,&size,4);
-       if(cnt == -1)
-            handle_error("send_data (packet_size)");
-        printf("[SERVER] sending data to client[%c] whose fd is %d with size %d\n",it->id,it->fd,size);
-        cnt = write(it->fd,data,size);
-        if(cnt == -1)
-            handle_error("send_data (data)");
-    }else
-        printf("[SERVER] Warning sending data to client %c failed! client not found!\n",client_id);
-    
+    if(clients.find(client_id) == clients.end()) {
+        printf("Warning: Client do not exist\n");
+        return;
+    }
+    char packet[size+4];
+    memcpy(packet,&size,4);
+    memcpy(packet+4,data,size);
+    int cnt = write(clients[client_id],&packet,size+4);
+    if(cnt == -1)
+        handle_error("send_data (packet_size)");
 }
 
 

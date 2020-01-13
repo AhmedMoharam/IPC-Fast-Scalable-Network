@@ -48,13 +48,11 @@ int main(int argc, char *argv[]){
     request.is_read = rand() % 1;
     char buffer[] = "Hello World";
     //std::cout << "[CLIENT]" << "sending reuqest: start_addr=" << request.start_addr << " size=" << request.size << std::endl;
-   /* for(int i=0; i < 100 ; i++){
+    for(int i=0; i < 100 ; i++){
         printf("sending %s\n",buffer);
         client.send_data(buffer, sizeof(buffer));
-    }*/
-
-    printf("sleeping for 10 sec\n");
-    sleep(10);
-    
+    }
+    //printf("sleeping for 10 sec\n");
+    client.close_connection();
     return 0;
 }
